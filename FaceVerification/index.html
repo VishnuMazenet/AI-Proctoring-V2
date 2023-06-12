@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="X-UA-Compatible" content="ie=edge">
+    <title>Face detection</title>
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <script src="face-api.min.js"></script>
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+    <div class="container">
+        <center>
+            <div class="jumbotron">
+                <h1>Face detection</h1>
+            </div>
+            <video id="video" width="600" height="450" autoplay></video>
+            <button id="verifyButton">Verify</button>
+        </center>
+        <div id="result"></div>
+
+    </div>
+
+    <script>
+        let labeledFaceDescriptors
+        const resultElement = document.getElementById('result')
+
+        Promise.all([
+            faceapi.nets.ssdMobilenetv1.load('/faceregv/models'),
+            faceapi.nets.faceRecognitionNet.load('/faceregv/models'),
+            faceapi.nets.faceLandmark68Net.load('/faceregv/models')
+        ])
+            .then(() => {
+                const video = document.getElementById('video')
+                return startWebcam()
+            })
+            .then(() => getLabeledFaceDescriptions())
+            .then((descriptions) => {
+                labeledFaceDescriptors = descriptions
+                return setupFaceDetection()
+            })
+            .catch((error) => {
+                console.error(error)
+            })
+
+        function startWebcam() {
+            return new Promise((resolve, reject) => {
+                navigator.mediaDevices.getUserMedia({ video: true, audio: false })
+                    .then((stream) => {
+                        video.srcObject = stream
+                        resolve()
+                    })
+                    .catch((error) => {
+                        reject(error)
+                    });
+            });
+        }
+
+        function getLabeledFaceDescriptions() {
+            const labels = ['vishnu']
+            return Promise.all(
+                labels.map(async (label) => {
+                    const descriptions = []
+                    for (let i = 1; i <= 2; i += 1) {
+                        try {
+                            const img = await faceapi.fetchImage(`./labels/${label}/(${i}).png`)
+                            const detections = await faceapi
+                                .detectSingleFace(img)
+                                .withFaceLandmarks()
+                                .withFaceDescriptor()
+                            if (detections) {
+                                descriptions.push(detections.descriptor)
+                            } else {
+                                console.log(`No face detected for ${label}/(${i}).png`)
+                            }
+                        } catch (error) {
+                            console.error(`Error loading image ${label}/(${i}).png`, error)
+                        }
+                    }
+                    return new faceapi.LabeledFaceDescriptors(label, descriptions)
+                })
+            );
+        }
+
+        function setupFaceDetection() {
+            // Add an event listener to the 'verify' button
+            const verifyButton = document.getElementById('verifyButton')
+            const resultDiv = document.getElementById('result')
+
+            video.addEventListener('play', async () => {
+                const faceMatcher = new faceapi.FaceMatcher(labeledFaceDescriptors)
+                let unknownFaceCount = 0
+                let consecutiveUnknownFaceCount = 1
+                const timeThreshold = 5000 // 5 seconds (in milliseconds)
+                let actionInProgress = false
+
+                const canvas = faceapi.createCanvasFromMedia(video)
+                document.body.append(canvas)
+
+                const displaySize = { width: video.width, height: video.height }
+                faceapi.matchDimensions(canvas, displaySize)
+
+                setInterval(async () => {
+                    const detections = await faceapi
+                        .detectAllFaces(video)
+                        .withFaceLandmarks()
+                        .withFaceDescriptors()
+
+                    const resizedDetections = faceapi.resizeResults(detections, displaySize)
+
+                    canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height)
+
+                    const results = resizedDetections.map((d) => {
+                        return faceMatcher.findBestMatch(d.descriptor)
+                    })
+
+                    const knownFaceCount = results.filter((result) => !result.toString().includes('unknown')).length
+
+                    if (knownFaceCount === 0) {
+                        unknownFaceCount += 1
+                    } else {
+                        unknownFaceCount = 0
+                    }
+
+                    if (unknownFaceCount === 5 && !actionInProgress) {
+                        actionInProgress = true
+                        console.log(`Unknown face detected for ${consecutiveUnknownFaceCount} times`)
+                        ++consecutiveUnknownFaceCount
+                        setTimeout(() => {
+                            actionInProgress = false
+                        }, timeThreshold)
+                    }
+
+                    results.forEach((result, i) => {
+                        const box = resizedDetections[i].detection.box
+                        const drawBox = new faceapi.draw.DrawBox(box, {
+                            label: result.toString(),
+                        })
+                        drawBox.draw(canvas);
+                    })
+                }, 100)
+            })
+
+            verifyButton.addEventListener('click', () => {
+                const canvas = faceapi.createCanvasFromMedia(video)
+                const context = canvas.getContext('2d')
+                canvas.width = video.videoWidth
+                canvas.height = video.videoHeight
+                context.drawImage(video, 0, 0, canvas.width, canvas.height)
+                const capturedImage = canvas.toDataURL('image/jpeg')
+
+                const verifyFace = async () => {
+                    const faceImage = await faceapi.fetchImage(capturedImage);
+                    const detections = await faceapi
+                        .detectSingleFace(faceImage)
+                        .withFaceLandmarks()
+                        .withFaceDescriptor()
+
+                    if (detections) {
+                        const bestMatch = faceapi.euclideanDistance(
+                            detections.descriptor,
+                            labeledFaceDescriptors[0].descriptors[0]
+                        );
+
+                        if (bestMatch < 0.63) {
+                            setResult(true)
+                        } else {
+                            setResult(false)
+                        }
+                    } else {
+                        setResult(false)
+                    }
+                };
+
+                verifyFace()
+            });
+
+            // Function to set the result
+            function setResult(isValid) {
+                resultElement.innerText = isValid ? 'True' : 'False'
+                resultElement.classList.remove('true', 'false')
+                resultElement.classList.add(isValid ? 'true' : 'false')
+            }
+
+            console.log("I'm done writing")
+        }
+    </script>
+</body>
+
+</html>
